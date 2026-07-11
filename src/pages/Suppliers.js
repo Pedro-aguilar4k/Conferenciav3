@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Search, Plus, Pencil, Trash2, Truck } from 'lucide-react';
@@ -18,19 +18,19 @@ export default function Suppliers() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
 
-  useEffect(() => { fetchFornecedores(); }, []);
-
-  const fetchFornecedores = async () => {
+  const fetchFornecedores = useCallback(async (term) => {
     try {
-      const res = await axios.get(`${API}/fornecedores`, { params: search ? { search } : {} });
+      const q = term !== undefined ? term : search;
+      const res = await axios.get(`${API}/fornecedores`, { params: q ? { search: q } : {} });
       setFornecedores(res.data);
     } catch (e) { console.error(e); }
-  };
-
-  useEffect(() => {
-    const t = setTimeout(fetchFornecedores, 300);
-    return () => clearTimeout(t);
   }, [search]);
+
+  // Single debounced effect: covers both mount and subsequent search changes.
+  useEffect(() => {
+    const t = setTimeout(() => fetchFornecedores(search), 300);
+    return () => clearTimeout(t);
+  }, [search, fetchFornecedores]);
 
   const openAdd = () => { setEditing(null); setForm(emptyForm); setDialogOpen(true); };
   const openEdit = (f) => { setEditing(f); setForm({ cnpj: f.cnpj, nome: f.nome, contato: f.contato || '', email: f.email || '', telefone: f.telefone || '' }); setDialogOpen(true); };

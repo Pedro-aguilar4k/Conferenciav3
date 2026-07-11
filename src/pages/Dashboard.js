@@ -1,13 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { FileCheck, Clock, AlertTriangle, Link2, Target, Zap, Brain, TrendingUp, Package } from 'lucide-react';
+import { FileCheck, Clock, AlertTriangle, Link2, Target, Zap, Brain } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { TEST_IDS } from '@/constants/testIds';
 
 const API = process.env.REACT_APP_BACKEND_URL ? `${process.env.REACT_APP_BACKEND_URL}/api` : '/api';
-
-const PIE_COLORS = ['#22C55E', '#3B82F6', '#A855F7', '#71717A'];
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
@@ -26,26 +24,36 @@ export default function Dashboard() {
     }
   };
 
+  // Derived data — memoized so it only recomputes when `data` actually changes.
+  const stats = useMemo(() => {
+    if (!data) return [];
+    return [
+      { label: 'Conferidas Hoje', value: data.conferidas_hoje, icon: FileCheck, color: 'text-green-400', border: 'border-green-500/20', testId: TEST_IDS.statConferidas },
+      { label: 'Pendentes', value: data.pendentes, icon: Clock, color: 'text-yellow-400', border: 'border-yellow-500/20', testId: TEST_IDS.statPendentes },
+      { label: 'Tempo Medio', value: `${data.tempo_medio_min}m`, icon: Clock, color: 'text-blue-400', border: 'border-blue-500/20', testId: TEST_IDS.statTempoMedio },
+      { label: 'Divergencias', value: data.divergentes, icon: AlertTriangle, color: 'text-red-400', border: 'border-red-500/20', testId: TEST_IDS.statDivergencias },
+      { label: 'Sem Vinculo', value: data.sem_vinculo, icon: Link2, color: 'text-orange-400', border: 'border-orange-500/20', testId: TEST_IDS.statSemVinculo },
+      { label: 'Automacao', value: `${data.pct_identificacao_auto}%`, icon: Target, color: 'text-emerald-400', border: 'border-emerald-500/20', testId: TEST_IDS.statPrecisao },
+    ];
+  }, [data]);
+
+  const methodData = useMemo(() => {
+    if (!data?.reconhecimento_por_metodo) return [];
+    return [
+      { name: 'EAN', value: data.reconhecimento_por_metodo.ean, color: '#22C55E' },
+      { name: 'Vinculo', value: data.reconhecimento_por_metodo.vinculo, color: '#3B82F6' },
+      { name: 'Similaridade', value: data.reconhecimento_por_metodo.similaridade, color: '#A855F7' },
+      { name: 'Manual', value: data.reconhecimento_por_metodo.manual, color: '#71717A' },
+    ].filter(d => d.value > 0);
+  }, [data]);
+
+  const totalMethodItems = useMemo(
+    () => methodData.reduce((acc, d) => acc + d.value, 0),
+    [methodData]
+  );
+
   if (loading) return <div className="flex items-center justify-center h-64 text-[#71717A]">Carregando dashboard...</div>;
   if (!data) return <div className="text-[#71717A]">Erro ao carregar dashboard</div>;
-
-  const stats = [
-    { label: 'Conferidas Hoje', value: data.conferidas_hoje, icon: FileCheck, color: 'text-green-400', border: 'border-green-500/20', testId: TEST_IDS.statConferidas },
-    { label: 'Pendentes', value: data.pendentes, icon: Clock, color: 'text-yellow-400', border: 'border-yellow-500/20', testId: TEST_IDS.statPendentes },
-    { label: 'Tempo Medio', value: `${data.tempo_medio_min}m`, icon: Clock, color: 'text-blue-400', border: 'border-blue-500/20', testId: TEST_IDS.statTempoMedio },
-    { label: 'Divergencias', value: data.divergentes, icon: AlertTriangle, color: 'text-red-400', border: 'border-red-500/20', testId: TEST_IDS.statDivergencias },
-    { label: 'Sem Vinculo', value: data.sem_vinculo, icon: Link2, color: 'text-orange-400', border: 'border-orange-500/20', testId: TEST_IDS.statSemVinculo },
-    { label: 'Automacao', value: `${data.pct_identificacao_auto}%`, icon: Target, color: 'text-emerald-400', border: 'border-emerald-500/20', testId: TEST_IDS.statPrecisao },
-  ];
-
-  const methodData = data.reconhecimento_por_metodo ? [
-    { name: 'EAN', value: data.reconhecimento_por_metodo.ean, color: '#22C55E' },
-    { name: 'Vinculo', value: data.reconhecimento_por_metodo.vinculo, color: '#3B82F6' },
-    { name: 'Similaridade', value: data.reconhecimento_por_metodo.similaridade, color: '#A855F7' },
-    { name: 'Manual', value: data.reconhecimento_por_metodo.manual, color: '#71717A' },
-  ].filter(d => d.value > 0) : [];
-
-  const totalMethodItems = methodData.reduce((acc, d) => acc + d.value, 0);
 
   return (
     <div data-testid="dashboard-page" className="space-y-6">

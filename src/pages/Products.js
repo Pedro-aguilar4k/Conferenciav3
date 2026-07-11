@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Search, Plus, Pencil, Trash2, Package, FileSpreadsheet } from 'lucide-react';
@@ -19,19 +19,19 @@ export default function Products() {
   const [form, setForm] = useState(emptyForm);
   const [exporting, setExporting] = useState(false);
 
-  useEffect(() => { fetchProdutos(); }, []);
-
-  const fetchProdutos = async () => {
+  const fetchProdutos = useCallback(async (term) => {
     try {
-      const res = await axios.get(`${API}/produtos`, { params: search ? { search } : {} });
+      const q = term !== undefined ? term : search;
+      const res = await axios.get(`${API}/produtos`, { params: q ? { search: q } : {} });
       setProdutos(res.data);
     } catch (e) { console.error(e); }
-  };
-
-  useEffect(() => {
-    const t = setTimeout(fetchProdutos, 300);
-    return () => clearTimeout(t);
   }, [search]);
+
+  // Single debounced effect: covers both mount and subsequent search changes.
+  useEffect(() => {
+    const t = setTimeout(() => fetchProdutos(search), 300);
+    return () => clearTimeout(t);
+  }, [search, fetchProdutos]);
 
   const openAdd = () => { setEditing(null); setForm(emptyForm); setDialogOpen(true); };
   const openEdit = (p) => { setEditing(p); setForm({ codigo: p.codigo, descricao: p.descricao, ean: p.ean || '', unidade: p.unidade, preco: p.preco, categoria: p.categoria || '' }); setDialogOpen(true); };

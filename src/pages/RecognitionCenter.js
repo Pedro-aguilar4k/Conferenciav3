@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Search, Brain, Check, X, Eye, ChevronDown, ChevronUp, Filter, AlertCircle } from 'lucide-react';
@@ -89,7 +89,10 @@ export default function RecognitionCenter() {
   };
 
   const pendingCount = items.length;
-  const withSuggestions = items.filter(i => i.sugestoes?.length > 0).length;
+  const withSuggestions = useMemo(
+    () => items.filter(i => i.sugestoes?.length > 0).length,
+    [items]
+  );
 
   if (loading) return <div className="flex items-center justify-center h-64 text-[#71717A]">Carregando...</div>;
 

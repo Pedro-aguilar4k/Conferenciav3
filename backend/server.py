@@ -266,8 +266,13 @@ def extract_manufacturer_code(text):
     return None
 
 # ── Scoring / Matching Engine ──────────────────────────────────────
-async def match_product(item_desc, item_ean, item_cprod, fornecedor_cnpj, quantidade=0):
-    """Multi-criteria intelligent matching engine with weighted scoring."""
+async def match_product(item_desc, item_ean, item_cprod, fornecedor_cnpj, quantidade=0, _cache=None):
+    """Multi-criteria intelligent matching engine with weighted scoring.
+
+    The optional ``_cache`` dict allows callers processing many items in sequence
+    (ex.: XML import) to share expensive DB reads (products list, supplier
+    bindings, supplier nota count) across items, avoiding N x M queries.
+    """
 
     # ── Criterion 1: EAN exact match → weight 100 ──
     if item_ean and item_ean not in ('SEM GTIN', '', 'None', '0'):
@@ -315,23 +320,57 @@ async def match_product(item_desc, item_ean, item_cprod, fornecedor_cnpj, quanti
                 }
 
     # ── Multi-criteria scoring for all products ──
-    all_products = await db.produtos.find({'ativo': True}).to_list(2000)
+    if _cache is not None and 'all_products' in _cache:
+        all_products = _cache['all_products']
+    else:
+        all_products = await db.produtos.find({'ativo': True}).to_list(2000)
+        if _cache is not None:
+            _cache['all_products'] = all_products
     normalized_desc = normalize_text(item_desc)
     mfg_code = extract_manufacturer_code(item_desc)
 
     # Pre-fetch supplier bindings for bonus calculation
-    existing_binding_codes = set()
-    if fornecedor_cnpj:
-        bindings_cursor = db.equivalencia_produtos.find(
-            {'fornecedor_cnpj': fornecedor_cnpj}, {'produto_interno_codigo': 1}
-        )
-        async for b in bindings_cursor:
-            existing_binding_codes.add(b.get('produto_interno_codigo', ''))
+    if _cache is not None and 'binding_codes' in _cache:
+        existing_binding_codes = _cache['binding_codes']
+    else:
+        existing_binding_codes = set()
+        if fornecedor_cnpj:
+            bindings_cursor = db.equivalencia_produtos.find(
+                {'fornecedor_cnpj': fornecedor_cnpj}, {'produto_interno_codigo': 1}
+            )
+            async for b in bindings_cursor:
+                existing_binding_codes.add(b.get('produto_interno_codigo', ''))
+        if _cache is not None:
+            _cache['binding_codes'] = existing_binding_codes
 
     # Check if supplier is recurring
-    supplier_nota_count = 0
-    if fornecedor_cnpj:
-        supplier_nota_count = await db.notas.count_documents({'fornecedor_cnpj': fornecedor_cnpj})
+    if _cache is not None and 'supplier_nota_count' in _cache:
+        supplier_nota_count = _cache['supplier_nota_count']
+    else:
+        supplier_nota_count = 0
+        if fornecedor_cnpj:
+            supplier_nota_count = await db.notas.count_documents({'fornecedor_cnpj': fornecedor_cnpj})
+        if _cache is not None:
+            _cache['supplier_nota_count'] = supplier_nota_count
+
+    # Pre-fetch historical items with similar quantity for this cprod (single query
+    # instead of one per candidate product). Preserves the +2 "Quantidade Similar" bonus.
+    similar_qty_codes = set()
+    if quantidade > 0 and item_cprod:
+        qty_min = quantidade * 0.8
+        qty_max = quantidade * 1.2
+        similar_cursor = db.itens_nota.find(
+            {
+                'cprod': item_cprod,
+                'produto_interno_codigo': {'$ne': None},
+                'quantidade': {'$gte': qty_min, '$lte': qty_max},
+            },
+            {'produto_interno_codigo': 1},
+        )
+        async for it in similar_cursor:
+            code = it.get('produto_interno_codigo')
+            if code:
+                similar_qty_codes.add(code)
 
     suggestions = []
     for prod in all_products:
@@ -363,15 +402,10 @@ async def match_product(item_desc, item_ean, item_cprod, fornecedor_cnpj, quanti
             best_score += 3
             criterios.append({'criterio': 'Fornecedor Recorrente', 'peso': 3, 'bonus': True})
 
-        # Bonus: Similar quantity (if product has been seen with similar qty) → +2
-        if quantidade > 0 and item_cprod:
-            prev_items = await db.itens_nota.find_one({
-                'cprod': item_cprod, 'produto_interno_codigo': p.codigo,
-                'quantidade': {'$gte': quantidade * 0.8, '$lte': quantidade * 1.2}
-            })
-            if prev_items:
-                best_score += 2
-                criterios.append({'criterio': 'Quantidade Similar', 'peso': 2, 'bonus': True})
+        # Bonus: Similar quantity (uses pre-fetched set — see similar_qty_codes above) → +2
+        if p.codigo in similar_qty_codes:
+            best_score += 2
+            criterios.append({'criterio': 'Quantidade Similar', 'peso': 2, 'bonus': True})
 
         best_score = min(best_score, 99)
 
@@ -705,11 +739,13 @@ async def importar_xml(file: UploadFile = File(...)):
     nota_id = str(nota_result.inserted_id)
 
     itens_identificados = 0
+    match_cache = {}  # shared across items of this NF-e (products list, bindings, count)
     for item_data in items:
         match_result = await match_product(
             item_data['descricao_nfe'], item_data.get('ean'),
             item_data.get('cprod'), header.get('fornecedor_cnpj'),
-            item_data.get('quantidade', 0)
+            item_data.get('quantidade', 0),
+            _cache=match_cache,
         )
         item = ItemNota(
             nota_id=nota_id, **item_data,
@@ -1236,28 +1272,40 @@ async def dashboard():
     pipeline = [{'$group': {'_id': '$fornecedor_nome', 'count': {'$sum': 1}}}, {'$sort': {'count': -1}}, {'$limit': 5}]
     top_fornecedores = await db.notas.aggregate(pipeline).to_list(5)
 
-    # Suppliers with highest error rates (most unmatched items)
-    pipeline_errors = [
-        {'$lookup': {'from': 'itens_nota', 'localField': '_id', 'foreignField': 'nota_id', 'as': 'itens', 'let': {'nid': {'$toString': '$_id'}}, 'pipeline': [{'$match': {'$expr': {'$eq': ['$nota_id', '$$nid']}}}]}},
-    ]
-    # Simpler approach: count unmatched items per supplier
+    # Suppliers with highest error rates (most unmatched items) — single aggregation
+    # replaces the previous O(N) loop that fired 2 count_documents per nota.
     fornecedor_errors = []
-    all_notas = await db.notas.find({}, {'_id': 1, 'fornecedor_nome': 1, 'fornecedor_cnpj': 1}).to_list(500)
-    forn_error_map = {}
-    for n in all_notas:
-        nid = str(n['_id'])
-        fname = n.get('fornecedor_nome', 'N/A')
-        unmatched = await db.itens_nota.count_documents({'nota_id': nid, 'produto_interno_id': None})
-        total = await db.itens_nota.count_documents({'nota_id': nid})
-        if fname not in forn_error_map:
-            forn_error_map[fname] = {'total': 0, 'unmatched': 0}
-        forn_error_map[fname]['total'] += total
-        forn_error_map[fname]['unmatched'] += unmatched
-
-    for fname, counts in forn_error_map.items():
-        if counts['total'] > 0:
-            rate = round(counts['unmatched'] / counts['total'] * 100, 1)
-            fornecedor_errors.append({'nome': fname, 'taxa_erro': rate, 'total': counts['total'], 'sem_vinculo': counts['unmatched']})
+    error_pipeline = [
+        {'$lookup': {
+            'from': 'itens_nota',
+            'let': {'nid': {'$toString': '$_id'}},
+            'pipeline': [
+                {'$match': {'$expr': {'$eq': ['$nota_id', '$$nid']}}},
+                {'$group': {
+                    '_id': None,
+                    'total': {'$sum': 1},
+                    'unmatched': {'$sum': {'$cond': [{'$eq': ['$produto_interno_id', None]}, 1, 0]}},
+                }},
+            ],
+            'as': 'stats',
+        }},
+        {'$unwind': {'path': '$stats', 'preserveNullAndEmptyArrays': True}},
+        {'$group': {
+            '_id': {'$ifNull': ['$fornecedor_nome', 'N/A']},
+            'total': {'$sum': {'$ifNull': ['$stats.total', 0]}},
+            'unmatched': {'$sum': {'$ifNull': ['$stats.unmatched', 0]}},
+        }},
+    ]
+    async for f in db.notas.aggregate(error_pipeline):
+        total = f.get('total', 0)
+        if total > 0:
+            unmatched = f.get('unmatched', 0)
+            fornecedor_errors.append({
+                'nome': f.get('_id') or 'N/A',
+                'taxa_erro': round(unmatched / total * 100, 1),
+                'total': total,
+                'sem_vinculo': unmatched,
+            })
     fornecedor_errors.sort(key=lambda x: x['taxa_erro'], reverse=True)
 
     notas_por_dia = []
@@ -1398,9 +1446,18 @@ app.add_middleware(
 async def startup():
     await db.produtos.create_index("codigo")
     await db.produtos.create_index("ean")
+    await db.produtos.create_index("ativo")
     await db.fornecedores.create_index("cnpj")
     await db.itens_nota.create_index("nota_id")
     await db.itens_nota.create_index([("produto_interno_id", 1)])
+    await db.itens_nota.create_index([("cprod", 1), ("produto_interno_codigo", 1)])
+    await db.itens_nota.create_index("metodo_identificacao")
+    await db.itens_nota.create_index("ignorado")
+    await db.notas.create_index("chave")
+    await db.notas.create_index("status")
+    await db.notas.create_index("fornecedor_cnpj")
+    await db.notas.create_index([("created_at", -1)])
+    await db.notas.create_index("conferencia_fim")
     await db.equivalencia_produtos.create_index([("fornecedor_cnpj", 1), ("codigo_fornecedor", 1)])
     await db.historico_leituras.create_index("nota_id")
     await db.historico_aprendizado.create_index("fornecedor_cnpj")

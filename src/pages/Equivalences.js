@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Trash2, Link2, Filter } from 'lucide-react';
@@ -13,28 +13,22 @@ export default function Equivalences() {
   const [fornecedores, setFornecedores] = useState([]);
   const [filterCnpj, setFilterCnpj] = useState('all');
 
-  useEffect(() => {
-    fetchEquivalencias();
-    fetchFornecedores();
-  }, []);
-
-  useEffect(() => { fetchEquivalencias(); }, [filterCnpj]);
-
-  const fetchEquivalencias = async () => {
+  const fetchEquivalencias = useCallback(async () => {
     try {
       const params = {};
       if (filterCnpj && filterCnpj !== 'all') params.fornecedor_cnpj = filterCnpj;
       const res = await axios.get(`${API}/equivalencias`, { params });
       setEquivalencias(res.data);
     } catch (e) { console.error(e); }
-  };
+  }, [filterCnpj]);
 
-  const fetchFornecedores = async () => {
-    try {
-      const res = await axios.get(`${API}/fornecedores`);
-      setFornecedores(res.data);
-    } catch (e) { console.error(e); }
-  };
+  // Fetch fornecedores once (independent of filter changes)
+  useEffect(() => {
+    axios.get(`${API}/fornecedores`).then(r => setFornecedores(r.data)).catch(console.error);
+  }, []);
+
+  // Single effect handles mount + filter changes, avoiding duplicate calls.
+  useEffect(() => { fetchEquivalencias(); }, [fetchEquivalencias]);
 
   const handleDelete = async (id) => {
     try {

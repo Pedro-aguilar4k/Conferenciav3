@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -182,13 +182,21 @@ function ConferenceGame({ notaId }) {
     } catch (e) { toast.error('Erro ao finalizar'); }
   };
 
+  // Derived values — memoized to avoid recalculating on every render/scan.
+  const itensCompletos = useMemo(
+    () => itens.filter(i => i.quantidade > 0 && i.quantidade_conferida >= i.quantidade).length,
+    [itens]
+  );
+  const progressPct = useMemo(
+    () => (itens.length > 0 ? Math.round((itensCompletos / itens.length) * 100) : 0),
+    [itens.length, itensCompletos]
+  );
+  const allComplete = itens.length > 0 && itensCompletos === itens.length;
+
   if (!nota) return <div className="text-zinc-500">Carregando...</div>;
 
   const isActive = nota.status === 'em_conferencia';
   const isDone = ['conferida', 'divergente'].includes(nota.status);
-  const itensCompletos = itens.filter(i => i.quantidade > 0 && i.quantidade_conferida >= i.quantidade).length;
-  const progressPct = itens.length > 0 ? Math.round((itensCompletos / itens.length) * 100) : 0;
-  const allComplete = itens.length > 0 && itensCompletos === itens.length;
 
   // ── Start screen ──
   if (!isActive && !isDone) {

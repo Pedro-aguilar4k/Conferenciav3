@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -63,15 +63,15 @@ export default function NfeImport() {
     } catch (e) { toast.error('Erro ao remover nota'); }
   };
 
-  const notasFiltradas = notas.filter(n => {
-    if (!busca.trim()) return true;
+  const notasFiltradas = useMemo(() => {
+    if (!busca.trim()) return notas;
     const q = busca.toLowerCase();
-    return (
+    return notas.filter(n => (
       (n.numero || '').toLowerCase().includes(q) ||
       (n.fornecedor_nome || '').toLowerCase().includes(q) ||
       (n.fornecedor_cnpj || '').includes(q)
-    );
-  });
+    ));
+  }, [notas, busca]);
 
   return (
     <div className="space-y-6">
