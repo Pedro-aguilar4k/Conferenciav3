@@ -224,7 +224,7 @@ class HistoricoLeitura(BaseDocument):
 async def match_product(item_desc, item_ean, item_cprod, fornecedor_cnpj, quantidade=0, _cache=None):
     return await _match_product(db, Produto, item_desc, item_ean, item_cprod, fornecedor_cnpj, quantidade, _cache)
 
-# ── Learning Service ───────────────────────────────────────────────
+# ── Learning Service ─────────────���─────────────────────────────────
 async def save_learning(item, produto, nota, metodo='manual', confianca=100.0):
     """Save learning data whenever a binding is confirmed."""
     if not nota or not nota.fornecedor_cnpj:
@@ -920,7 +920,7 @@ async def ignorar_reconhecimento(item_id: str):
         raise HTTPException(404, "Item nao encontrado")
     return {"ok": True}
 
-# ����� API: Equivalencias ─────────────────────────────────────────────
+# ����� API: Equivalencias ────────────��────────────────────────────────
 @api_router.get("/equivalencias")
 async def list_equivalencias(fornecedor_cnpj: Optional[str] = None):
     query = {}
@@ -1151,6 +1151,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# TEMP DEBUG: expõe o traceback completo para diagnosticar o 500 do importar-xml.
+# REMOVER após o diagnóstico.
+import traceback as _traceback
+from fastapi import Request as _Request
+from fastapi.responses import JSONResponse as _JSONResponse
+from fastapi import HTTPException as _HTTPException
+
+
+@app.exception_handler(Exception)
+async def _debug_exception_handler(request: _Request, exc: Exception):
+    if isinstance(exc, _HTTPException):
+        return _JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    tb = _traceback.format_exc()
+    logger.error(f"UNHANDLED EXCEPTION on {request.method} {request.url.path}:\n{tb}")
+    return _JSONResponse(
+        status_code=500,
+        content={"error": type(exc).__name__, "message": str(exc), "traceback": tb.splitlines()[-25:]},
+    )
 
 @app.on_event("startup")
 async def startup():
