@@ -1,11 +1,19 @@
+import sys
+import os
+from pathlib import Path
+
+# Garante que backend/ está no sys.path para que `services.*` seja encontrado
+# tanto ao rodar localmente (uvicorn backend.server:app) quanto no serverless Vercel
+_backend_dir = Path(__file__).parent
+if str(_backend_dir) not in sys.path:
+    sys.path.insert(0, str(_backend_dir))
+
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import os
 import logging
-from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, BeforeValidator
 from typing import List, Optional, Annotated
 from datetime import datetime, timezone, date, timedelta
