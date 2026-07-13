@@ -8,6 +8,8 @@ _backend_dir = Path(__file__).parent
 if str(_backend_dir) not in sys.path:
     sys.path.insert(0, str(_backend_dir))
 
+import asyncio
+
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -25,9 +27,52 @@ from services.xml_parser import parse_nfe_xml
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-mongo_url = os.environ['MONGO_URL_2']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME_2']]
+# ── Conexão MongoDB (lazy, por event loop) ─────────────────────────
+# No ambiente serverless da Vercel, cada invocação pode rodar em um event loop
+# novo. Um AsyncIOMotorClient criado no import (fora de um loop) fica preso ao
+# primeiro loop e quebra em invocações seguintes com "Event loop is closed".
+# Por isso o client é criado sob demanda e re-criado quando o loop muda.
+_mongo_client: Optional[AsyncIOMotorClient] = None
+_mongo_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _get_database():
+    """Retorna a database do Mongo ligada ao event loop atual, criando/
+    recriando o client quando necessário."""
+    global _mongo_client, _mongo_loop
+
+    mongo_url = os.environ.get('MONGO_URL_2')
+    db_name = os.environ.get('DB_NAME_2')
+    if not mongo_url or not db_name:
+        raise RuntimeError(
+            "Variáveis de ambiente MONGO_URL_2 e/ou DB_NAME_2 não estão "
+            "configuradas. Defina-as no projeto da Vercel."
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if _mongo_client is None or _mongo_loop is not loop:
+        _mongo_client = AsyncIOMotorClient(mongo_url)
+        _mongo_loop = loop
+
+    return _mongo_client[db_name]
+
+
+class _LazyDatabase:
+    """Proxy que resolve a database do Mongo no momento do uso, mantendo
+    todas as chamadas `db.colecao...` do código inalteradas."""
+
+    def __getattr__(self, name):
+        return getattr(_get_database(), name)
+
+    def __getitem__(self, name):
+        return _get_database()[name]
+
+
+db = _LazyDatabase()
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -1109,26 +1154,35 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup():
-    await db.produtos.create_index("codigo")
-    await db.produtos.create_index("ean")
-    await db.produtos.create_index("ativo")
-    await db.fornecedores.create_index("cnpj")
-    await db.itens_nota.create_index("nota_id")
-    await db.itens_nota.create_index([("produto_interno_id", 1)])
-    await db.itens_nota.create_index([("cprod", 1), ("produto_interno_codigo", 1)])
-    await db.itens_nota.create_index("metodo_identificacao")
-    await db.itens_nota.create_index("ignorado")
-    await db.notas.create_index("chave")
-    await db.notas.create_index("status")
-    await db.notas.create_index("fornecedor_cnpj")
-    await db.notas.create_index([("created_at", -1)])
-    await db.notas.create_index("conferencia_fim")
-    await db.equivalencia_produtos.create_index([("fornecedor_cnpj", 1), ("codigo_fornecedor", 1)])
-    await db.historico_leituras.create_index("nota_id")
-    await db.historico_aprendizado.create_index("fornecedor_cnpj")
-    await db.historico_aprendizado.create_index("created_at")
-    logger.info("NF-e Conference System v2.0 started - Intelligent Matching Engine")
+    # A criação de índices é uma otimização e não deve derrubar a aplicação
+    # caso o banco esteja indisponível ou as credenciais estejam ausentes.
+    try:
+        await db.produtos.create_index("codigo")
+        await db.produtos.create_index("ean")
+        await db.produtos.create_index("ativo")
+        await db.fornecedores.create_index("cnpj")
+        await db.itens_nota.create_index("nota_id")
+        await db.itens_nota.create_index([("produto_interno_id", 1)])
+        await db.itens_nota.create_index([("cprod", 1), ("produto_interno_codigo", 1)])
+        await db.itens_nota.create_index("metodo_identificacao")
+        await db.itens_nota.create_index("ignorado")
+        await db.notas.create_index("chave")
+        await db.notas.create_index("status")
+        await db.notas.create_index("fornecedor_cnpj")
+        await db.notas.create_index([("created_at", -1)])
+        await db.notas.create_index("conferencia_fim")
+        await db.equivalencia_produtos.create_index([("fornecedor_cnpj", 1), ("codigo_fornecedor", 1)])
+        await db.historico_leituras.create_index("nota_id")
+        await db.historico_aprendizado.create_index("fornecedor_cnpj")
+        await db.historico_aprendizado.create_index("created_at")
+        logger.info("NF-e Conference System v2.0 started - Intelligent Matching Engine")
+    except Exception as e:
+        logger.error(f"Falha ao criar índices no startup (a aplicação continuará): {e}")
 
 @app.on_event("shutdown")
 async def shutdown():
-    client.close()
+    global _mongo_client, _mongo_loop
+    if _mongo_client is not None:
+        _mongo_client.close()
+        _mongo_client = None
+        _mongo_loop = None
